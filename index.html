@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 피부 진단 시스템</title>
+  <style>
+    body {
+      background: #1c1c1e;
+      color: white;
+      font-family: sans-serif;
+      max-width: 960px;
+      width: 100%;
+      margin: auto;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+    h2 { text-align: center; }
+    .image-container {
+      background: #444;
+      border-radius: 8px;
+      height: 280px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    video, img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .chat-box {
+      background: #2a2a2c;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 20px;
+      height: 250px;
+      overflow-y: auto;
+      font-size: 14px;
+    }
+    .chat-box p { margin: 8px 0; }
+    .user { color: #99c1ff; }
+    .assistant { color: #ffd479; }
+    .input-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 8px;
+      border-radius: 6px;
+      border: none;
+    }
+    button {
+      padding: 8px 14px;
+      background: #4f6df5;
+      border: none;
+      border-radius: 6px;
+      color: white;
+      cursor: pointer;
+    }
+
+    /* ===  결과 패널 스타일 === */
+    .metrics-panel{
+      background:#2a2a2c;
+      border-radius:8px;
+      margin-top:12px;
+      padding:12px 14px;
+    }
+    .metrics-title{
+      font-weight:600;
+      margin-bottom:8px;
+      opacity:.9;
+    }
+    .metrics-grid{
+      display:grid;
+      grid-template-columns:repeat(4,1fr);
+      gap:10px;
+    }
+    .metric-card{
+      background:#1f1f21;
+      border:1px solid #3a3a3c;
+      border-radius:10px;
+      padding:10px;
+      text-align:center;
+    }
+    .metric-label{
+      font-size:12px;
+      color:#aaa;
+      margin-bottom:6px;
+    }
+    .metric-value{
+      font-size:18px;
+      font-weight:700;
+    }
+    @media (max-width: 640px){
+      .metrics-grid{ grid-template-columns:repeat(2,1fr); }
+    }
+  </style>
+</head>
+<body>
+  <h2>AI 기반 피부 상태 분석 및 스마트 케어 솔루션</h2>
+
+  <p>카메라 또는 이미지 업로드</p>
+  <div class="image-container">
+    <video id="video" autoplay muted playsinline style="display: none;"></video>
+    <img id="previewImage" src="" style="display: none;">
+  </div>
+
+  <!--  결과 패널 -->
+  <div id="metricsPanel" class="metrics-panel" style="display:none;">
+    <div class="metrics-title">측정 결과</div>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label" id="ml1">Metric 1</div>
+        <div class="metric-value" id="mv1">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label" id="ml2">Metric 2</div>
+        <div class="metric-value" id="mv2">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label" id="ml3">Metric 3</div>
+        <div class="metric-value" id="mv3">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label" id="ml4">Metric 4</div>
+        <div class="metric-value" id="mv4">-</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:10px; display:flex; gap:8px;">
+    <button onclick="takePhoto()">📸 사진 찍기</button>
+    <button id="switchBtn" onclick="switchCamera()">🔄 카메라 전환</button>
+  </div>
+
+  <input type="file" id="imageInput" accept="image/*" capture="environment">
+  <canvas id="canvas" width="512" height="512" style="display: none;"></canvas>
+
+  <button onclick="analyzeImage()" style="margin-top:20px;">피부 분석 시작</button>
+
+  <div class="chat-box" id="chatBox"></div>
+
+  <!-- 로딩 표시 -->
+  <div id="loading" style="display:none; margin-top:10px; text-align:center; color:#aaa;">
+    ⏳ 결과를 불러오는 중입니다...
+  </div>
+
+  <div class="input-row">
+    <input type="text" id="userInput" placeholder="예: 피부가 어두워요, 어떤 제품을 추천해요?">
+    <button onclick="sendQuestion()">질문 보내기</button>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+  let chatHistory = [];
+  let previewImageBlob = null;
+  let videoStream = null;
+
+  // === 장비 선택 상태 ===
+  let currentDeviceId = null;
+  let videoInputs = []; // { deviceId, label }
+
+  const RESOLUTION_PREF = {
+    width:  { ideal: 1920 },
+    height: { ideal: 1080 },
+  };
+
+  const isFrontLabel = (label = "") => /front|user|전면|앞|自拍|前置/i.test(label);
+  const isBackLabel  = (label = "") => /back|rear|environment|후면|뒤|后置/i.test(label);
+
+  function updateSwitchBtnVisibility() {
+    const btn = document.getElementById("switchBtn");
+    if (!btn) return;
+    if (videoInputs.length < 2) {
+      btn.disabled = true;
+      btn.title = "이 장치는 카메라가 1개입니다.";
+    } else {
+      btn.disabled = false;
+      btn.title = "";
+    }
+  }
+
+  async function ensurePermissionProbe() {
+    try {
+      const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      tmp.getTracks().forEach(t => t.stop());
+    } catch (_) {}
+  }
+
+  async function enumerateVideoInputs() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    videoInputs = devices.filter(d => d.kind === "videoinput");
+    updateSwitchBtnVisibility();
+    return videoInputs;
+  }
+
+  async function upgradeTrackResolution(track) {
+    if (!track || !track.getCapabilities || !track.applyConstraints) return;
+    try {
+      const caps = track.getCapabilities();
+      const maxW = caps.width?.max;
+      const maxH = caps.height?.max;
+      const target = {
+        width:  maxW || RESOLUTION_PREF.width,
+        height: maxH || RESOLUTION_PREF.height,
+      };
+      await track.applyConstraints(target);
+    } catch (e) {
+      console.warn("해상도 업그레이드 실패, 초기 해상도 사용 중입니다：", e);
+    }
+  }
+
+  function waitVideoMetadata(video) {
+    return new Promise((resolve) => {
+      if (video.readyState >= 2 && video.videoWidth && video.videoHeight) return resolve();
+      const handler = () => {
+        video.removeEventListener('loadedmetadata', handler);
+        resolve();
+      };
+      video.addEventListener('loadedmetadata', handler);
+    });
+  }
+
+  async function openByDeviceId(deviceId) {
+    stopCamera();
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: deviceId }, ...RESOLUTION_PREF },
+      audio: false
+    });
+    const video = document.getElementById("video");
+    const img = document.getElementById("previewImage");
+    const track = videoStream.getVideoTracks()[0];
+
+    await upgradeTrackResolution(track);
+
+    currentDeviceId = (track.getSettings && track.getSettings().deviceId) || deviceId;
+    video.setAttribute("playsinline", "");
+    video.setAttribute("muted", "");
+    video.srcObject = videoStream;
+    await waitVideoMetadata(video);
+    await video.play();
+    video.style.display = "block";
+    img.style.display = "none";
+  }
+
+  async function forceSwitchToFrontIfNeeded() {
+    const track = videoStream?.getVideoTracks?.()[0];
+    if (!track) return;
+
+    const settings = track.getSettings ? track.getSettings() : {};
+    const facing = (settings.facingMode || "").toLowerCase();
+    const curr = videoInputs.find(d => d.deviceId === currentDeviceId);
+    const label = curr?.label || "";
+
+    if (facing === "user" || isFrontLabel(label)) return;
+
+    await enumerateVideoInputs();
+    if (videoInputs.length < 2) return;
+
+    let front = videoInputs.find(d => isFrontLabel(d.label));
+    if (!front && videoInputs.length === 2) {
+      front = videoInputs.find(d => d.deviceId !== currentDeviceId);
+    }
+
+    if (front) {
+      try {
+        await openByDeviceId(front.deviceId);
+        return;
+      } catch (e) {
+        console.warn("强制切前置失败（by deviceId），尝试兜底：", e);
+      }
+    }
+
+    try {
+      stopCamera();
+      videoStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: "user" }, ...RESOLUTION_PREF },
+        audio: false
+      });
+      const track2 = videoStream.getVideoTracks()[0];
+      await upgradeTrackResolution(track2);
+      currentDeviceId = (track2.getSettings && track2.getSettings().deviceId) || null;
+      const video = document.getElementById("video");
+      video.setAttribute("playsinline", "");
+      video.setAttribute("muted", "");
+      video.srcObject = videoStream;
+      await waitVideoMetadata(video);
+      await video.play();
+      document.getElementById("video").style.display = "block";
+      document.getElementById("previewImage").style.display = "none";
+    } catch (e2) {
+      console.warn("facingMode:user 兜底也失败，可能该机型限制强制切换。", e2);
+    }
+  }
+
+  async function startCamera(prefer = "user") {
+    const video = document.getElementById("video");
+    const img = document.getElementById("previewImage");
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert("현재 브라우저는 카메라 기능을 지원하지 않습니다.");
+      return;
+    }
+
+    try {
+      await ensurePermissionProbe();
+      await enumerateVideoInputs();
+
+      if (videoInputs.length === 1) {
+        try {
+          await openByDeviceId(videoInputs[0].deviceId);
+          return;
+        } catch (e) {
+          console.warn("单摄像头 deviceId 打开失败，回退到 {video:true}:", e);
+          stopCamera();
+          videoStream = await navigator.mediaDevices.getUserMedia({ video: { ...RESOLUTION_PREF }, audio: false });
+          const track = videoStream.getVideoTracks()[0];
+          await upgradeTrackResolution(track);
+          currentDeviceId = (track.getSettings && track.getSettings().deviceId) || null;
+          video.setAttribute("playsinline", "");
+          video.setAttribute("muted", "");
+          video.srcObject = videoStream;
+          await waitVideoMetadata(video);
+          await video.play();
+          video.style.display = "block";
+          img.style.display = "none";
+          return;
+        }
+      }
+
+      try {
+        stopCamera();
+        videoStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: "user" }, ...RESOLUTION_PREF },
+          audio: false
+        });
+      } catch {
+        try {
+          stopCamera();
+          videoStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user", ...RESOLUTION_PREF },
+            audio: false
+          });
+        } catch {
+          stopCamera();
+          videoStream = await navigator.mediaDevices.getUserMedia({
+            video: { ...RESOLUTION_PREF },
+            audio: false
+          });
+        }
+      }
+
+      const track = videoStream.getVideoTracks()[0];
+      await upgradeTrackResolution(track);
+      currentDeviceId = (track.getSettings && track.getSettings().deviceId) || null;
+
+      video.setAttribute("playsinline", "");
+      video.setAttribute("muted", "");
+      video.srcObject = videoStream;
+      await waitVideoMetadata(video);
+      await video.play();
+
+      video.style.display = "block";
+      img.style.display = "none";
+
+      await forceSwitchToFrontIfNeeded();
+
+    } catch (err) {
+      const name = (err && err.name) || "Error";
+      const map = {
+        NotAllowedError: "카메라 권한이 거부되었습니다. 브라우저 권한/설정을 확인하세요.",
+        NotFoundError: "사용 가능한 카메라를 찾을 수 없습니다.",
+        NotReadableError: "다른 앱이 카메라를 사용 중일 수 있습니다.",
+        OverconstrainedError: "요청한 카메라 조건을 만족할 수 없습니다.",
+        SecurityError: "보안 정책에 의해 차단되었습니다(HTTPS/iframe/Permissions-Policy 확인)."
+      };
+      alert((map[name] || "카메라를 열 수 없습니다.") + `\n(${name})`);
+      console.error(err);
+    }
+  }
+
+  function stopCamera() {
+    if (videoStream) {
+      videoStream.getTracks().forEach(track => track.stop());
+      videoStream = null;
+    }
+  }
+
+  async function switchCamera() {
+    await enumerateVideoInputs();
+    if (videoInputs.length < 2) {
+      alert("이 장치는 카메라가 1개입니다. 전환할 수 없습니다.");
+      return;
+    }
+    const now = videoInputs.find(d => d.deviceId === currentDeviceId);
+    const isFrontNow = isFrontLabel(now?.label || "");
+    let target = videoInputs.find(d => (isFrontNow ? isBackLabel(d.label) : isFrontLabel(d.label)));
+    if (!target && videoInputs.length === 2) {
+      target = videoInputs.find(d => d.deviceId !== currentDeviceId);
+    }
+    if (target) {
+      try {
+        await openByDeviceId(target.deviceId);
+      } catch (e) {
+        console.warn("切换失败：", e);
+      }
+    }
+  }
+
+  async function snapFullResIfSupported() {
+    if (!videoStream) return null;
+    const track = videoStream.getVideoTracks()[0];
+    if (!("ImageCapture" in window)) return null;
+    try {
+      const ic = new ImageCapture(track);
+      if (ic.takePhoto) {
+        return await ic.takePhoto();
+      } else if (ic.grabFrame) {
+        const bitmap = await ic.grabFrame();
+        const canvas = document.createElement("canvas");
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext("2d").drawImage(bitmap, 0, 0);
+        return await new Promise(r => canvas.toBlob(r, "image/png"));
+      }
+    } catch (e) {
+      console.warn("ImageCapture 拍照失败，回退 canvas：", e);
+    }
+    return null;
+  }
+
+  async function takePhoto() {
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+
+    if (!videoStream || !video.srcObject) {
+      startCamera("user").then(() => {
+        if (!videoStream) return;
+        alert("카메라를 열었습니다. 한 번 더 '사진 찍기'를 눌러주세요.");
+      });
+      return;
+    }
+
+    const fullBlob = await snapFullResIfSupported();
+    if (fullBlob) {
+      const useFull = confirm("이 사진을 사용하시겠습니까?");
+      if (useFull) {
+        previewImageBlob = fullBlob;
+        const img = document.getElementById("previewImage");
+        img.src = URL.createObjectURL(fullBlob);
+        img.style.display = "block";
+        video.style.display = "none";
+        stopCamera();
+        return;
+      }
+    }
+
+    const track = videoStream.getVideoTracks()[0];
+    const settings = track.getSettings ? track.getSettings() : {};
+    const w = video.videoWidth  || settings.width  || 1280;
+    const h = video.videoHeight || settings.height || 720;
+
+    canvas.width = w;
+    canvas.height = h;
+
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, w, h);
+
+    canvas.toBlob(blob => {
+      if (!blob) return;
+      const use = confirm("이 사진을 사용하시겠습니까?");
+      if (use) {
+        previewImageBlob = blob;
+        const img = document.getElementById("previewImage");
+        img.src = URL.createObjectURL(blob);
+        img.style.display = "block";
+        video.style.display = "none";
+        stopCamera();
+      }
+    }, "image/png");
+  }
+
+  document.getElementById("imageInput").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      previewImageBlob = file;
+      const reader = new FileReader();
+      reader.onload = () => {
+        document.getElementById("previewImage").src = reader.result;
+        document.getElementById("previewImage").style.display = "block";
+        document.getElementById("video").style.display = "none";
+        stopCamera();
+      };
+      reader.readAsDataURL(file);
+    }
+  });
+
+
+  //   data.metrics = {Glossiness:0.71, Moisture:0.43, Sebum:0.12, Elasticity:0.55}
+  //   或 data.metrics = [["Glossiness",0.71],["Moisture",0.43],["Sebum",0.12],["Elasticity",0.55]]
+  function updateMetricsFromResponse(data){
+    const panel = document.getElementById("metricsPanel");
+    if(!data) return;
+
+    let items = null;
+    if (Array.isArray(data.metrics)) {
+      items = data.metrics.slice(0,4);
+    } else if (data.metrics && typeof data.metrics === 'object') {
+      items = Object.entries(data.metrics).slice(0,4);
+    } else if (Array.isArray(data.results)) {
+      items = data.results.slice(0,4);
+    } else if (data.results && typeof data.results === 'object') {
+      items = Object.entries(data.results).slice(0,4);
+    }
+    if(!items) return;
+
+    while(items.length < 4) items.push([`Metric ${items.length+1}`, "-"]);
+
+    const labels = [document.getElementById("ml1"), document.getElementById("ml2"),
+                    document.getElementById("ml3"), document.getElementById("ml4")];
+    const values = [document.getElementById("mv1"), document.getElementById("mv2"),
+                    document.getElementById("mv3"), document.getElementById("mv4")];
+
+    items.slice(0,4).forEach((pair, idx) => {
+      const name = Array.isArray(pair) ? pair[0] : `Metric ${idx+1}`;
+      const val  = Array.isArray(pair) ? pair[1] : pair;
+      labels[idx].textContent = name;
+      values[idx].textContent = (typeof val === 'number') ? val.toFixed(2) : `${val}`;
+    });
+
+    panel.style.display = "block";
+  }
+
+  // ====== 분석 논리 ======
+  async function analyzeImage() {
+    if (!previewImageBlob) {
+      alert("사진을 업로드하거나 촬영해주세요!");
+      return;
+    }
+
+    document.getElementById("loading").style.display = "block";
+
+    const formData = new FormData();
+    formData.append("file", previewImageBlob, "input.png");
+
+    const res = await fetch("/api/analyze", {
+      method: "POST",
+      body: formData
+    });
+
+    const data = await res.json();
+    document.getElementById("loading").style.display = "none";
+
+    document.getElementById("previewImage").src = "data:image/png;base64," + data.image_base64;
+    document.getElementById("previewImage").style.display = "block";
+    document.getElementById("video").style.display = "none";
+
+    updateMetricsFromResponse(data);
+
+    if (data.error) {
+      chatHistory = data.chat_history || [
+        { role: "assistant", content: data.message || "분석에 실패했습니다." }
+      ];
+      renderChat();
+      return;
+    }
+
+    const defaultQuestion = "내 피부 측정치 데이터가 어느 바우만 모델의 타입 인지 16가지 중에 알려주고 그 타입이 어떤 특징을 가지고 있는지 친근하고 자세히 2문장으로 분석해줘. 화장품, 피부과의 추천 시술, 전문 피부마사지 혹은 피부케어에 대해서 순서대로 알려줘. 화장품은 토너/스킨 → 에센스/앰플 → 로션 → 크림 순으로 4가지는 꼭 항목별로 2가지 이상 추천해줬으면 좋겠고 추가적으로 너가 한가지에서 두가지 정도 추천해줘도 되. 추천하는 화장품의 전성분을 조금이나마 설명해줘. 실제 화장품을 올리브영, 화해에서 찾아서 제품명을 순서대로 알려줘. 피부과 시술은 어떤 시술인지도 간단하게 설명해주면서 비용과 추천하는 용량 혹은 샷수를 상세히 알려줘. 추천하는 전문 피부마사지(에스테틱) 혹은 피부케어에 대해서도 설명해줘! 에스테틱의 위치정보나 샾의 정확한 명칭은 아직 말하지마!";
+    chatHistory = [{ role: "user", content: defaultQuestion }];
+    renderChat();
+
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ history: [], user_input: defaultQuestion })
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      let lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const data = JSON.parse(line);
+          chatHistory = data.chat_history;
+          renderChat();
+        } catch (e) {
+          console.warn("解析失败:", e);
+        }
+      }
+    }
+  }
+
+  // ====== 문제 전송 ======
+  async function sendQuestion() {
+    const inputField = document.getElementById("userInput");
+    const sendButton = document.querySelector(".input-row button");
+
+    const userInput = inputField.value.trim();
+    if (!userInput) return;
+
+    inputField.disabled = true;
+    sendButton.disabled = true;
+    document.getElementById("loading").style.display = "block";
+
+    renderChat();
+    inputField.value = "";
+
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ history: chatHistory, user_input: userInput })
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      let lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const data = JSON.parse(line);
+          chatHistory = data.chat_history;
+          renderChat();
+        } catch (e) {
+          console.warn("파싱 오류:", e);
+        }
+      }
+    }
+
+    inputField.disabled = false;
+    sendButton.disabled = false;
+    document.getElementById("loading").style.display = "none";
+  }
+
+  function renderChat() {
+    const box = document.getElementById("chatBox");
+    box.innerHTML = "";
+
+    // 기본값으로 시스템이 생성한 앞의 3개 내용을 건너뜁니다
+    let startIdx = 0;
+
+    if (chatHistory.length >= 4){
+      startIdx = 3;
+      for (let i = startIdx; i < chatHistory.length; i++) {
+        const msg = chatHistory[i];
+        const p = document.createElement("p");
+        p.className = msg.role;
+        const contentHTML = marked.parse(msg.content);
+        p.innerHTML = `<strong>${msg.role === "user" ? "🙋‍♀️ 나" : "🤖 AI"}:</strong> ${contentHTML}`;
+        box.appendChild(p);
+      }
+
+      box.querySelectorAll("a").forEach(a => {
+        a.setAttribute("target", "_blank");
+        a.setAttribute("rel", "noopener noreferrer");
+      });
+
+      box.scrollTop = box.scrollHeight;
+    }
+   }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const input = document.getElementById("userInput");
+    input.addEventListener("keydown", (e) => {
+      if (e.isComposing) return;
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        const sendBtn = document.querySelector(".input-row button");
+        if (sendBtn.disabled) return;
+        sendQuestion();
+      }
+    });
+
+    startCamera("user");
+  });
+</script>
+</body>
+</html>
